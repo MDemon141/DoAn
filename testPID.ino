@@ -1,16 +1,4 @@
 #include <BluetoothSerial.h>
-#include <Wire.h>
-#include <Adafruit_TCS34725.h>
-
-
-#define TRIG_PIN 18 // Chân Trigger của cảm biến được kết nối với GPIO 18
-#define ECHO_PIN 19 // Chân Echo của cảm biến được kết nối với GPIO 19
-const char* color = "green";
-const char* icolor = "none";
-const char* state ="none";
-// int speed = 0;
-long ldis, rdis;
-Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_50MS, TCS34725_GAIN_4X);
 
 // Định nghĩa các chân kết nối với cảm biến
 #define ir1 14
@@ -38,9 +26,6 @@ double previousError = 0;
 double integral = 0;
 
 void setup() {
-  pinMode(TRIG_PIN, OUTPUT);
-  pinMode(ECHO_PIN, INPUT);
-
   pinMode(ir1, INPUT);
   pinMode(ir2, INPUT);
   pinMode(ir3, INPUT);
@@ -50,19 +35,26 @@ void setup() {
   pinMode(IN2, OUTPUT);
   pinMode(IN3, OUTPUT);
   pinMode(IN4, OUTPUT);
-  pinMode(ENA, LOW);
-  pinMode(ENB, LOW);
+  pinMode(ENA, OUTPUT);
+  pinMode(ENB, OUTPUT);
 
   Serial.begin(9600); // Bắt đầu giao tiếp Serial với máy tính
   SerialBT.begin("ESP32_LF_Car"); // Tên thiết bị Bluetooth
   Serial.println("The device started, now you can pair it with Bluetooth!");
-
-  if (tcs.begin()) {
-    Serial.println("Found sensor");
-  } else {
-    Serial.println("No TCS34725 found ... check your connections");
-    while (1);
-  }
+}
+void sharpLeftTurn() {
+  /*The pin numbers and high, low values might be different depending on your connections */
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+}
+void sharpRightTurn() {
+  /*The pin numbers and high, low values might be different depending on your connections */
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
 }
 
 // Hàm tính toán lỗi (error)
@@ -90,29 +82,6 @@ double PIDCal(int error) {
 }
 
 void loop() {
-  // Setup màu từ cảm biến màu
-  uint16_t clear, red, green, blue;
-
-  tcs.getRawData(&red, &green, &blue, &clear);
-
-  Serial.print("C: "); Serial.print(clear);
-  Serial.print(" R: "); Serial.print(red);
-  Serial.print(" G: "); Serial.print(green);
-  Serial.print(" B: "); Serial.println(blue);
-
-  if((0.7*red > blue)&& (0.7*red > green)) {
-    color = "red";
-  }
-  if((0.7*green > blue)&& (0.7*green > red)) {
-    color = "green";
-  }
-  if((0.7*blue > red)&& (0.7*blue > green)) {
-    color = "blue";
-  }
-  if((0.7*red > blue)&& (0.7*green > blue)) {
-    color = "yellow";
-  }
-
   // Nhận giá trị PID và tốc độ từ Bluetooth
   if (SerialBT.available()) {
     String receivedData = SerialBT.readStringUntil('\n');
@@ -143,107 +112,45 @@ void loop() {
     Serial.print(" Base Speed: ");
     Serial.println(baseSpeed);
   }
-  
-  if (color == "red") { 
+
+  // Đọc giá trị từ cảm biến
+  int s1 = digitalRead(ir1);
+  int s2 = digitalRead(ir2);
+  int s3 = digitalRead(ir3);
+  int s4 = digitalRead(ir4);
+  int s5 = digitalRead(ir5);
+
+  // Tính toán lỗi
+  int error = calculateError(s1, s2, s3, s4, s5);
+  if (error == -5) {
     stop();
-    state ="stop"; 
-    speed = 0;
-  }
-  if (color == "green") { 
-    state = "forward";
-    baseSpeed = 80;
-    // Kp = 0.0;
-    // Ki = 0.0;
-    // Kd = 5.0;
-  }
-  if (color == "yellow") { 
-    state = "forward";
-    baseSpeed = 55;
-    // Kp = 28.0;
-    // Ki = 0.0;
-    // Kd = 5.0;
-
   }
 
-  if (color != "red") {
-    long fdis = readDistance();
-    Serial.print("Distance: ");
-    Serial.print(fdis);
-    Serial.println(" cm");
-    if (baseSpeed == 55) {
-        if (fdis <20) {
-        stop();
-        state = "stop";
-        delay(1000);
-        turnL(80, 80);
-        delay(250); 
-        stop();
-        ldis = readDistance();
-        delay(1000);
-        turnR(80, 80);
-        delay(250); 
-        stop();
-        delay(1000);
-        turnR(80, 80);
-        delay(250); 
-        stop();
-        rdis = readDistance();
-        delay(1000);
-        turnL(80, 80);
-        delay(260); 
-        stop();
-        Serial.println(ldis);
-        Serial.println(rdis);
-        delay(1000);
+  else {
+  double output = PIDCal(error);
 
-        if (ldis >10 && ldis >= rdis ) {
-          goLeft();
-        }
-        else if (rdis > 10 && rdis > ldis) {
-          goRight();
-        }
-      }
-    }
+    // Tính toán tốc độ của các động cơ
+    int speedLeft = baseSpeed - output;
+    int speedRight = baseSpeed + output;
 
+    speedLeft = constrain(speedLeft, 0, 255);
+    speedRight = constrain(speedRight, 0, 255);
 
-    int s1 = digitalRead(ir1);
-    int s2 = digitalRead(ir2);
-    int s3 = digitalRead(ir3);
-    int s4 = digitalRead(ir4);
-    int s5 = digitalRead(ir5);
+    // Điều khiển động cơ
+    analogWrite(ENA, speedLeft);
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
 
-    // Tính toán lỗi
-    int error = calculateError(s1, s2, s3, s4, s5);
-    if (error == -5) {
-      stop();
-    }
-
-    else {
-    double output = PIDCal(error);
-
-      // Tính toán tốc độ của các động cơ
-      int speedLeft = baseSpeed - output;
-      int speedRight = baseSpeed + output;
-
-      speedLeft = constrain(speedLeft, 0, 255);
-      speedRight = constrain(speedRight, 0, 255);
-
-      // Điều khiển động cơ
-      analogWrite(ENA, speedLeft);
-      digitalWrite(IN1, HIGH);
-      digitalWrite(IN2, LOW);
-
-      analogWrite(ENB, speedRight);
-      digitalWrite(IN3, HIGH);
-      digitalWrite(IN4, LOW);
-      Serial.print(output);
-      Serial.print(" + ");
-      Serial.print(speedLeft); 
-      Serial.print(" + ");
-      Serial.println(speedRight); 
-
-    }
+    analogWrite(ENB, speedRight);
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, LOW);
+    Serial.print(output);
+    Serial.print(" + ");
+    Serial.print(speedLeft); 
+    Serial.print(" + ");
+    Serial.println(speedRight); 
   }
+  delay(20);
 }
 void forward(int s) {
   digitalWrite(IN1, HIGH);
@@ -280,16 +187,4 @@ void turnR(int s) {
   digitalWrite(IN4, LOW);
   // Tốc độ có thể điều chỉnh bằng PWM trên ENA và ENB
   analogWrite(ENA, s);
-}
-long readDistance() {
-  digitalWrite(TRIG_PIN, LOW); // Tắt chân Trigger
-  delayMicroseconds(2);
-  digitalWrite(TRIG_PIN, HIGH); // Gửi xung siêu âm
-  delayMicroseconds(10);
-  digitalWrite(TRIG_PIN, LOW);
-
-  long duration = pulseIn(ECHO_PIN, HIGH); 
-  long distance = (duration * 0.0343) / 2;
-
-  return distance;
 }
