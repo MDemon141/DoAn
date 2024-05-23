@@ -1,17 +1,32 @@
-#include <BluetoothSerial.h>
 #include <Wire.h>
 #include <Adafruit_TCS34725.h>
-
-
 #define TRIG_PIN 18 // Chân Trigger của cảm biến được kết nối với GPIO 18
 #define ECHO_PIN 19 // Chân Echo của cảm biến được kết nối với GPIO 19
+
+#include <Firebase_ESP_Client.h>
+#include "addons/TokenHelper.h"
+#include "addons/RTDBHelper.h"
+#define API_KEY "AIzaSyDMaokD3SIFf-FZ--pAu8bhgNLmELBeFR4"
+#define DATABASE_URL "https://doan-141-default-rtdb.firebaseio.com"
+
+FirebaseData fbdo;
+FirebaseData stream;
+
+// Authentication data
+FirebaseAuth auth;
+FirebaseConfig config;
+bool signupOK = false;
+
 const char* color = "green";
-const char* icolor = "none";
-const char* state ="none";
+const char* pcolor = "none";
+const char* state ="forward";
+const char* pstate ="forward";
+String mode ="auto";
+String command ="s";
+
 // int speed = 0;
 long ldis, rdis;
 Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_24MS, TCS34725_GAIN_4X);
-
 // Định nghĩa các chân kết nối với cảm biến
 #define ir1 14
 #define ir2 27
@@ -27,12 +42,11 @@ Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_24MS, TCS3472
 #define ENA 5   // Right Motor Enable Pin EA
 #define ENB 15  // Left Motor Enable Pin EB
 
-BluetoothSerial SerialBT;
-
 double Kp = 28.0;
 double Ki = 0.0;
-double Kd = 6.0;
-int baseSpeed = 55;
+double Kd = 6.5;
+int baseSpeed = 80;
+
 
 double previousError = 0;
 double integral = 0;
@@ -52,20 +66,39 @@ void setup() {
   pinMode(IN4, OUTPUT);
   pinMode(ENA, LOW);
   pinMode(ENB, LOW);
-
   Serial.begin(9600); // Bắt đầu giao tiếp Serial với máy tính
-  SerialBT.begin("ESP32_LF_Car"); // Tên thiết bị Bluetooth
-  Serial.println("The device started, now you can pair it with Bluetooth!");
 
+  Serial.print("Start connection");
+  WiFi.begin("Sy Minh", "minh140102");
+  while((!(WiFi.status()==WL_CONNECTED))){
+    delay(200);
+    Serial.print("..");
+  } 
+  Serial.println("Connected");
+  config.api_key = API_KEY;
+  config.database_url = DATABASE_URL;
+  if (Firebase.signUp(&config, &auth, "", "")){
+    Serial.println("ok");
+    signupOK = true;
+  }
+  config.token_status_callback = tokenStatusCallback; //see addons/TokenHelper.h
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
+  if(Firebase.ready() && signupOK) {   
+    Firebase.RTDB.setString(&fbdo, "/color",color);
+    Firebase.RTDB.setInt(&fbdo, "/baseSpeed",baseSpeed);
+    Firebase.RTDB.setString(&fbdo, "/state",state);
+    Firebase.RTDB.setString(&fbdo, "/mode",mode);
+    Firebase.RTDB.setString(&fbdo, "/command",command);
+  }
   if (tcs.begin()) {
     Serial.println("Found sensor");
   } else {
     Serial.println("No TCS34725 found ... check your connections");
     while (1);
   }
-}
 
-// Hàm tính toán lỗi (error)
+}
 int calculateError(int s1, int s2, int s3, int s4, int s5) {
   // 
   if (s1 == 0 && s2 == 1 && s3 == 1 && s4 == 1 && s5 == 1) return 4;
@@ -90,194 +123,228 @@ double PIDCal(int error) {
 }
 
 void loop() {
-  // Setup màu từ cảm biến màu
-  uint16_t clear, red, green, blue;
-
-  tcs.getRawData(&red, &green, &blue, &clear);
-
-  // Serial.print("C: "); Serial.print(clear);
-  // Serial.print(" R: "); Serial.print(red);
-  // Serial.print(" G: "); Serial.print(green);
-  // Serial.print(" B: "); Serial.println(blue);
-
-  if((0.7*red > blue)&& (0.7*red > green)) {
-    color = "red";
-  }
-  if((0.7*green > blue)&& (0.7*green > red)) {
-    color = "green";
-  }
-  if((0.7*blue > red)&& (0.7*blue > green)) {
-    color = "blue";
-  }
-  if((0.7*red > blue)&& (0.7*green > blue)) {
-    color = "yellow";
-  }
-  Serial.println(color);
-
-  // Nhận giá trị PID và tốc độ từ Bluetooth
-  if (SerialBT.available()) {
-    String receivedData = SerialBT.readStringUntil('\n');
-    char identifier = receivedData.charAt(0);
-    double value = receivedData.substring(1).toFloat();
-
-    switch (identifier) {
-      case 'P':
-        Kp = value;
-        break;
-      case 'I':
-        Ki = value;
-        break;
-      case 'D':
-        Kd = value;
-        break;
-      case 'S':
-        baseSpeed = value;
-        break;
+  if (mode == "auto") {
+    uint16_t clear, red, green, blue;
+    tcs.getRawData(&red, &green, &blue, &clear);
+    if((0.7*red > blue)&& (0.7*red > green)) {
+      color = "red";
     }
-
-    Serial.print("Kp: ");
-    Serial.print(Kp);
-    Serial.print(" Ki: ");
-    Serial.print(Ki);
-    Serial.print(" Kd: ");
-    Serial.print(Kd);
-    Serial.print(" Base Speed: ");
-    Serial.println(baseSpeed);
-  }
-  
-  if (color == "red") { 
-    stop();
-    state ="stop"; 
-    baseSpeed = 0;
-  }
-  if (color == "green") { 
-    state = "forward";
-    baseSpeed = 80;
-    // Kp = 0.0;
-    // Ki = 0.0;
-    // Kd = 5.0;
-  }
-  if (color == "yellow") { 
-    state = "forward";
-    baseSpeed = 55;
-    // Kp = 28.0;
-    // Ki = 0.0;
-    // Kd = 5.0;
-
-  }
-
-  if (color != "red") {
-    long fdis = readDistance();
-    // Serial.print("Distance: ");
-    // Serial.print(fdis);
-    // Serial.println(" cm");
-    if (baseSpeed == 55) {
-      if (fdis <25) {
-        stop();
-        delay(1000);
-        turnL(152);
-        delay(120); 
-        stop();
-        ldis = readDistance();
-        delay(1000);
-        turnR(150);
-        delay(120); 
-        stop();
-        delay(1000);
-        turnR(150);
-        delay(120); 
-        stop();
-        rdis = readDistance();
-        delay(1000);
-        turnL(152);
-        delay(120); 
-        stop();
-        Serial.println(ldis);
-        Serial.println(rdis);
-        delay(1000);
-        if (ldis > 20 && ldis >= rdis ) {
-          goLeft();
-        }
-        else if (rdis > 20 && rdis > ldis) {
-          goRight();
-        }
-      }
+    if((0.7*green > blue)&& (0.7*green > red)) {
+      color = "green";
     }
-    if (baseSpeed == 80) {
-      if (fdis <35) {
-        stop();
-        delay(1000);
-        turnL(152);
-        delay(120); 
-        stop();
-        ldis = readDistance();
-        delay(1000);
-        turnR(150);
-        delay(120); 
-        stop();
-        delay(1000);
-        turnR(150);
-        delay(120); 
-        stop();
-        rdis = readDistance();
-        delay(1000);
-        turnL(152);
-        delay(120); 
-        stop();
-        Serial.println(ldis);
-        Serial.println(rdis);
-        delay(1000);
-        if (ldis > 20 && ldis >= rdis ) {
-          goLeft();
-        }
-        else if (rdis > 20 && rdis > ldis) {
-          goRight();
-        }
-      }
+    if((0.7*blue > red)&& (0.7*blue > green)) {
+      color = "blue";
     }
-    int s1 = digitalRead(ir1);
-    int s2 = digitalRead(ir2);
-    int s3 = digitalRead(ir3);
-    int s4 = digitalRead(ir4);
-    int s5 = digitalRead(ir5);
-
-    // // Tính toán lỗi
-    int error = calculateError(s1, s2, s3, s4, s5);
-    if (error == -5) {
+    if((0.7*red > blue)&& (0.7*green > blue)) {
+      color = "yellow";
+    }
+    if (color == "red") { 
       stop();
+      state ="stop"; 
+      baseSpeed = 0;
     }
-    else {
-    double output = PIDCal(error);
+    if (color == "green") { 
+      state = "forward";
+      baseSpeed = 80;
+      // Kp = 0.0;
+      // Ki = 0.0;
+      // Kd = 5.0;
+    }
+    if (color == "yellow") { 
+      state = "forward";
+      baseSpeed = 55;
+      // Kp = 28.0;
+      // Ki = 0.0;
+      // Kd = 5.0;
+    }
+    if (pcolor == "none") {
+      pcolor = color;
+    }
+    if  (pcolor != color || pstate != state) {
+      if(Firebase.ready() && signupOK) {   
+      Firebase.RTDB.setString(&fbdo, "/color",color);
+      Firebase.RTDB.setInt(&fbdo, "/baseSpeed",baseSpeed);
+      Firebase.RTDB.setString(&fbdo, "/state",state);
+      }
+      pcolor = color;
+    }
+    if (state == "stop") {
+      if (Firebase.RTDB.getString(&fbdo, "/mode")) {
+        if (fbdo.dataType() == "string") {
+          mode = fbdo.stringData();
+          Serial.println(mode);
+        }
+      }
+    }
+    Serial.println(mode);
+    Serial.print(state);
+    Serial.print(" + ");
+    Serial.print(pcolor);
+    Serial.print(" + ");
+    Serial.println(color);
 
-      // Tính toán tốc độ của các động cơ
-      int speedLeft = baseSpeed - output;
-      int speedRight = baseSpeed + output;
+    if (color != "red") {
+      long fdis = readDistance();
+      // Serial.print("Distance: ");
+      // Serial.print(fdis);
+      // Serial.println(" cm");
+      if (baseSpeed == 55) {
+        if (fdis <25) {
+          stop();
+          delay(2000);
+          pstate = state;
+          state = "obstacle";
+          Firebase.RTDB.setString(&fbdo, "/state",state);
+          stop();
+          delay(1000);
+          turnL(152);
+          delay(120); 
+          stop();
+          ldis = readDistance();
+          delay(1000);
+          turnR(150);
+          delay(120); 
+          stop();
+          delay(1000);
+          turnR(150);
+          delay(120); 
+          stop();
+          rdis = readDistance();
+          delay(1000);
+          turnL(152);
+          delay(120); 
+          stop();
+          Serial.println(ldis);
+          Serial.println(rdis);
+          delay(1000);
+          if (ldis > 20 && ldis >= rdis ) {
+            goLeft();
+          }
+          else if (rdis > 20 && rdis > ldis) {
+            goRight();
+          }
+          state = pstate; 
+          Firebase.RTDB.setString(&fbdo, "/state",pstate);
+        }
+      }
+      if (baseSpeed == 80) {
+        if (fdis <35) {
+          stop();
+          delay(2000);
+          pstate = state;
+          state = "obstacle";
+          Firebase.RTDB.setString(&fbdo, "/state",state);
+          stop();
+          delay(1000);
+          turnL(152);
+          delay(120); 
+          stop();
+          ldis = readDistance();
+          delay(1000);
+          turnR(150);
+          delay(120); 
+          stop();
+          delay(1000);
+          turnR(150);
+          delay(120); 
+          stop();
+          rdis = readDistance();
+          delay(1000);
+          turnL(152);
+          delay(120); 
+          stop();
+          Serial.println(ldis);
+          Serial.println(rdis);
+          delay(1000);
+          if (ldis > 20 && ldis >= rdis ) {
+            goLeft();
+          }
+          else if (rdis > 20 && rdis > ldis) {
+            goRight();
+          }
+          state = pstate; 
+          Firebase.RTDB.setString(&fbdo, "/state",pstate);
+        }
+      }
+      int s1 = digitalRead(ir1);
+      int s2 = digitalRead(ir2);
+      int s3 = digitalRead(ir3);
+      int s4 = digitalRead(ir4);
+      int s5 = digitalRead(ir5);
 
-      speedLeft = constrain(speedLeft, 0, 255);
-      speedRight = constrain(speedRight, 0, 255);
+      // // Tính toán lỗi
+      int error = calculateError(s1, s2, s3, s4, s5);
+      if (error == -5) {
+        stop();
+        if (Firebase.RTDB.getString(&fbdo, "/mode")) {
+          if (fbdo.dataType() == "string") {
+            mode = fbdo.stringData();
+            Serial.println(mode);
+          }
+        }
+      }
+      else {
+      double output = PIDCal(error);
 
-      // Điều khiển động cơ
-      analogWrite(ENA, speedLeft);
-      digitalWrite(IN1, HIGH);
-      digitalWrite(IN2, LOW);
-      analogWrite(ENB, speedRight);
-      digitalWrite(IN3, HIGH);
-      digitalWrite(IN4, LOW);
-      Serial.print(baseSpeed);
-      Serial.print(" + ");
-      Serial.print(output);
-      Serial.print(" + ");
-      Serial.print(speedLeft); 
-      Serial.print(" + ");
-      Serial.println(speedRight); 
+        // Tính toán tốc độ của các động cơ
+        int speedLeft = baseSpeed - output;
+        int speedRight = baseSpeed + output;
+
+        speedLeft = constrain(speedLeft, 0, 255);
+        speedRight = constrain(speedRight, 0, 255);
+
+        // Điều khiển động cơ
+        analogWrite(ENA, speedLeft);
+        digitalWrite(IN1, HIGH);
+        digitalWrite(IN2, LOW);
+        analogWrite(ENB, speedRight);
+        digitalWrite(IN3, HIGH);
+        digitalWrite(IN4, LOW);
+        Serial.print(baseSpeed);
+        Serial.print(" + ");
+        Serial.print(output);
+        Serial.print(" + ");
+        Serial.print(speedLeft); 
+        Serial.print(" + ");
+        Serial.println(speedRight); 
+      }
     }
   }
+  else if (mode == "manual") {
+    if (Firebase.RTDB.getString(&fbdo, "/command")) {
+      if (fbdo.dataType() == "string") {
+        command = fbdo.stringData();
+        if (command == "f") {
+          forward(100);
+        } else if (command == "b") {
+          backward(100);
+        } else if (command == "l") {
+          turnL(100);
+        } else if (command == "r") {
+          turnR(100);
+        } else if (command == "s") {
+          stop();
+        } else if (command == "auto") {
+          mode = "auto";
+        }
+      }
+    }
+  } 
 }
 void forward(int s) {
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
   digitalWrite(IN3, HIGH);
   digitalWrite(IN4, LOW);
+  // Tốc độ có thể điều chỉnh bằng PWM trên ENA và ENB
+  analogWrite(ENA, s);
+  analogWrite(ENB, s);
+}
+void backward(int s) {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
   // Tốc độ có thể điều chỉnh bằng PWM trên ENA và ENB
   analogWrite(ENA, s);
   analogWrite(ENB, s);
