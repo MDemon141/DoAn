@@ -6,8 +6,8 @@
 #include <Firebase_ESP_Client.h>
 #include "addons/TokenHelper.h"
 #include "addons/RTDBHelper.h"
-#define API_KEY "AIzaSyDMaokD3SIFf-FZ--pAu8bhgNLmELBeFR4"
-#define DATABASE_URL "https://doan-141-default-rtdb.firebaseio.com"
+#define API_KEY "ABCDEFGH"
+#define DATABASE_URL "ABCDEFGH.COM"
 
 FirebaseData fbdo;
 FirebaseData stream;
